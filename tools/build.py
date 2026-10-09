@@ -22,7 +22,7 @@ import argparse, gzip, hashlib, json, os, platform, re, shutil, stat, struct, su
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CFG = json.load(open(os.path.join(ROOT, "runtime.json"), encoding="utf-8"))
 VERSION = CFG["version"]
-REPO_URL = os.environ.get("KEYPOSE_RUNTIME_REPO", "https://github.com/ch-h41/keypose-runtime")
+REPO_URL = os.environ.get("KEYPOSE_RUNTIME_REPO", "https://github.com/ch-h41/keypose-engine-runtime")
 
 
 def log(*a):

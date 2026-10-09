@@ -14,7 +14,7 @@ import hashlib, io, json, os, re, sys, tarfile, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CFG = json.load(open(os.path.join(ROOT, "runtime.json"), encoding="utf-8"))
-REPO = os.environ.get("GITHUB_REPOSITORY", "ch-h41/keypose-runtime")
+REPO = os.environ.get("GITHUB_REPOSITORY", "ch-h41/keypose-engine-runtime")
 TAG = "v" + CFG["version"]
 
 
