@@ -1,0 +1,246 @@
+"""Proves a built runtime works before it is packed. tools/build.py runs it with the pack's OWN
+interpreter, isolated from the build machine's environment:
+
+    <runtime>/bin/python3 -E -s tools/smoke.py <result.json> [holistic_landmarker.task]
+
+Exercises what the Keypose engine actually uses: numpy, ONNX Runtime on the CPU and on the GPU
+provider when there is one, OpenCV image operations and NMS, FFmpeg video decode with a frame seek and AV1,
+and MediaPipe's native library (a full landmarker run when a model file is given). Exits non-zero
+on the first failure; the JSON records versions and timings for the build log.
+"""
+import base64, json, os, sys, tempfile, time, types
+
+RESULT = {"ok": False, "checks": {}}
+# Each @check runs as soon as it is defined, top to bottom, so helpers go above the checks using them.
+
+
+def check(name):
+    def wrap(fn):
+        t = time.perf_counter()
+        try:
+            RESULT["checks"][name] = {"ok": True, "info": fn(), "ms": round((time.perf_counter() - t) * 1000, 1)}
+        except Exception as e:
+            RESULT["checks"][name] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            finish(1)
+        return fn
+    return wrap
+
+
+def finish(code):
+    RESULT["ok"] = code == 0
+    with open(sys.argv[1], "w", encoding="utf-8") as f:
+        json.dump(RESULT, f, indent=1)
+    print(json.dumps(RESULT, indent=1))
+    sys.exit(code)
+
+
+@check("interpreter")
+def _():
+    assert sys.version_info[:2] == (3, 12), sys.version
+    assert not sys.flags.no_site and sys.flags.ignore_environment and sys.flags.no_user_site, "run with -E -s"
+    here = os.path.realpath(sys.prefix)
+    for p in sys.path[1:]:      # [0] is this script's folder
+        if p and os.path.exists(p):
+            assert os.path.realpath(p).startswith(here), f"sys.path reaches outside the runtime: {p}"
+    return {"version": sys.version.split()[0], "prefix": sys.prefix}
+
+
+@check("numpy")
+def _():
+    import numpy as np
+    a = np.arange(12, dtype=np.float32).reshape(3, 4)
+    assert float((a @ a.T).sum()) == 1134.0          # (sum of the rows) . (sum of the rows)
+    return np.__version__
+
+
+# 220 bytes: Y = Relu(X @ W + B), opset 17 - made with the onnx package, embedded so this needs nothing else
+MODEL = base64.b64decode(
+    "CAgSFWtleXBvc2UtcnVudGltZS1zbW9rZTq6AQoRCgFYCgFXEgFNIgZNYXRNdWwKDgoBTQoBQhIBQSIDQWRkCgwKAUESAVkiBFJlbHUSBXNtb2tl"
+    "KjsIAwgEEAFCAVdKMAAAAADNzMw9zcxMPpqZmT7NzMw+AAAAP5qZGT8zMzM/zcxMP2ZmZj8AAIA/zcyMPyoZCAQQAUIBQkoQAACAvwAAAAAAAIA/"
+    "AAAAQFoTCgFYEg4KDAgBEggKAggBCgIIA2ITCgFZEg4KDAgBEggKAggBCgIIBEIECgAQEQ==")
+
+
+@check("onnxruntime")
+def _():
+    import numpy as np, onnxruntime as ort
+    from importlib import metadata
+    # Every onnxruntime variant installs into the same onnxruntime/ folder, so two of them silently
+    # overwrite each other (the usual cause of "only the CPU provider is available").
+    dists = sorted({d.metadata["Name"].lower() for d in metadata.distributions()
+                    if d.metadata["Name"] and d.metadata["Name"].lower().startswith("onnxruntime") and not d.metadata["Name"].lower().startswith("onnxruntime-ep-")})
+    assert len(dists) == 1, f"more than one onnxruntime package installed: {dists}"
+    x = np.array([[1, 2, 3]], np.float32)
+    want = np.array([[2.2, 3.8, 5.4, 7.0]], np.float32)
+    plugin = None
+    try:
+        import onnxruntime_ep_webgpu as plugin      # an add-on execution provider (onnxruntime 1.23+)
+    except ImportError:
+        pass
+    if plugin:
+        ort.register_execution_provider_library(plugin.get_ep_name(), plugin.get_library_path())
+    out = {"version": ort.__version__, "package": dists[0], "providers": ort.get_available_providers()}
+    if dists[0] == "onnxruntime-directml":
+        assert "DmlExecutionProvider" in out["providers"], out["providers"]
+        dll = os.path.join(os.path.dirname(ort.__file__), "capi", "DirectML.dll")
+        assert os.path.isfile(dll), "DirectML.dll is not in the package"
+    if plugin:   # registering it loaded its DLLs; it lists itself as a provider only when it finds a graphics adapter
+        out["plugin_devices"] = [f"{d.ep_name} ({d.device.vendor})" for d in ort.get_ep_devices() if d.ep_name == plugin.get_ep_name()]
+    cpu = ort.InferenceSession(MODEL, providers=["CPUExecutionProvider"]).run(None, {"X": x})[0]
+    assert np.allclose(cpu, want, atol=1e-5), cpu
+    # The GPU run itself is only required when KEYPOSE_SMOKE_GPU=require: build machines in CI have
+    # no graphics card, so there a provider that cannot find a GPU is recorded, not a failure. A GPU
+    # that does run must give the right answer.
+    for ep in ("CoreMLExecutionProvider", "DmlExecutionProvider", "WebGpuExecutionProvider", "CUDAExecutionProvider"):
+        if ep not in out["providers"]:
+            continue
+        so = ort.SessionOptions()
+        try:
+            if ep == "WebGpuExecutionProvider":
+                dev = next((d for d in ort.get_ep_devices() if d.ep_name == ep), None)
+                if dev is None:
+                    raise RuntimeError("no WebGPU adapter")
+                so.add_provider_for_devices([dev], {"powerPreference": "high-performance"})
+                sess = ort.InferenceSession(MODEL, so)
+            else:
+                opts = {}
+                if ep == "DmlExecutionProvider":
+                    so.enable_mem_pattern = False
+                    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+                    opts = {"performance_preference": "high_performance", "device_filter": "gpu"}
+                sess = ort.InferenceSession(MODEL, so, providers=[(ep, opts), "CPUExecutionProvider"])
+            if sess.get_providers()[0] != ep:     # onnxruntime quietly falls back to the CPU
+                raise RuntimeError(f"{ep} did not start")
+        except Exception as e:
+            if os.environ.get("KEYPOSE_SMOKE_GPU") == "require":
+                raise
+            out.setdefault("gpu_unavailable", {})[ep] = f"{type(e).__name__}: {str(e)[:200]}"
+            continue
+        gpu = sess.run(None, {"X": x})[0]
+        assert np.allclose(gpu, want, atol=1e-3), (ep, gpu)
+        out.setdefault("gpu", ep)                 # the first provider that ran (the engine prefers the same order)
+    return out
+
+
+@check("opencv")
+def _():
+    import cv2, numpy as np
+    img = np.zeros((480, 640, 3), np.uint8)
+    cv2.rectangle(img, (100, 100), (300, 400), (40, 180, 220), -1)
+    small = cv2.resize(img, (320, 240), interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    M = cv2.getAffineTransform(np.float32([[0, 0], [1, 0], [0, 1]]), np.float32([[0, 0], [2, 0], [0, 2]]))
+    warped = cv2.warpAffine(gray, M, (640, 480))
+    assert warped.shape == (480, 640) and int(warped[300, 300]) > 0
+    ok, jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    assert ok and cv2.imdecode(jpg, cv2.IMREAD_COLOR).shape == img.shape
+    keep = cv2.dnn.NMSBoxes([[0, 0, 10, 10], [1, 1, 10, 10], [50, 50, 10, 10]], [0.9, 0.8, 0.7], 0.3, 0.5)
+    assert sorted(int(i) for i in np.array(keep).ravel()) == [0, 2], keep
+    return cv2.__version__
+
+
+def ffmpeg_license():
+    """macOS: the FFmpeg that cv2 loads must be the LGPL build this runtime puts in its place."""
+    import ctypes, glob, cv2
+    libs = glob.glob(os.path.join(os.path.dirname(cv2.__file__), ".dylibs", "libavcodec.*.dylib"))
+    if not libs:
+        return None
+    lib = ctypes.CDLL(libs[0])
+    lib.avcodec_license.restype = ctypes.c_char_p
+    return lib.avcodec_license().decode()
+
+
+@check("video")
+def _():
+    import cv2, numpy as np
+    d = tempfile.mkdtemp(prefix="keypose-smoke-")
+    path = os.path.join(d, "clip.mp4")
+    w = cv2.VideoWriter(path, cv2.CAP_FFMPEG, cv2.VideoWriter_fourcc(*"mp4v"), 25, (320, 240))
+    assert w.isOpened(), "no FFmpeg video writer"
+    for i in range(30):                      # frame i carries its own number as a grey level
+        w.write(np.full((240, 320, 3), 8 * i, np.uint8))
+    w.release()
+    cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
+    assert cap.isOpened(), "FFmpeg could not open the clip it just wrote"
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frames = 0
+    while cap.read()[0]:
+        frames += 1
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 20)     # the engine seeks: it must land on the right frame
+    ok, f = cap.read()
+    cap.release()
+    os.remove(path); os.rmdir(d)
+    assert n == 30 and frames == 30, (n, frames)
+    assert ok and abs(float(f.mean()) - 160) < 6, f.mean() if ok else "no frame after seek"
+    info = {"backend": "FFMPEG", "frames": frames}
+    lic = ffmpeg_license()
+    if lic:
+        info["ffmpeg_license"] = lic
+        assert lic.startswith("LGPL"), f"OpenCV's FFmpeg is {lic}"
+    return info
+
+
+# 8 frames of AV1 (128x72, 1.2 KB, SVT-AV1): frame i is grey level 16 + 24i. Keypose reads AV1 exports and downloads;
+# FFmpeg's own AV1 decoder only drives hardware decoders, so a pack needs a software one (macOS: dav1d, built into
+# FFmpeg by tools/ffmpeg.sh; Windows: libaom, in OpenCV's FFmpeg DLL).
+AV1_CLIP = (
+    "AAAAIGZ0eXBpc29tAAACAGlzb21hdjAxaXNvMm1wNDEAAANPbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAUAAAQAAAQAA"
+    "AAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAA"
+    "Anp0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAUAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAA"
+    "AAAAAAAAAAAAAABAAAAAAIAAAABIAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAFAAAAAAAABAAAAAAHybWRpYQAAACBtZGhk"
+    "AAAAAAAAAAAAAAAAAAAyAAAAEABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABnW1p"
+    "bmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAV1zdGJsAAAArXN0c2QA"
+    "AAAAAAAAAQAAAJ1hdjAxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAIAASABIAAAASAAAAAAAAAABFkxhdmM2My4xLjEwMSBsaWJz"
+    "dnRhdjEAAAAAAAAAAAAAGP//AAAAGWF2MUOBAAwACgsCAAAFWb/HAL4AEAAAAApmaWVsAQAAAAAQcGFzcAAAAAEAAAABAAAAFGJ0"
+    "cnQAAAAAAAAZSwAAGUsAAAAYc3R0cwAAAAAAAAABAAAACAAAAgAAAAAYc3RzcwAAAAAAAAACAAAAAQAAAAUAAAAUc2R0cAAAAAAg"
+    "GBAYIBgQGAAAABxzdHNjAAAAAAAAAAEAAAABAAAACAAAAAEAAAA0c3RzegAAAAAAAAAAAAAACAAAACIAAABAAAAAAwAAAB0AAAAh"
+    "AAAAQAAAAAMAAAAdAAAAFHN0Y28AAAAAAAAAAQAAA38AAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBw"
+    "bAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYzLjEuMTAxAAAACGZyZWUAAAELbWRhdAoLAgAA"
+    "BVm/xxq+YBAyExAAhMCAQQAAAAACACJ7qt9nFVAyHygCAEAAAD0UABBAggQAADAAFTN6EGUQVthySWedc3wyHTACAAAASXooAAAA"
+    "gAADAAAV0dEKl+V647ul3MmcGgGYMhswBgAEEkl6KAAAAIAAAAAfdE0xZM+BCgSzCIAKCwIAAAVZv8cavmAQMhIQEITAgEEAAAAA"
+    "AgAifan8RVQyHygGAEAAAD0UABBAggQAADAAFTN6EGUQVthySWedc3wyHTAKAAAASXooAAAAgAADAAAV0dEKl+V647ul3MmcGgGY"
+    "MhswDgAEEkl6KAAAAIAAAAAfdE0xZM+BCgSzCIA="
+)
+
+
+@check("av1")
+def _():
+    import cv2
+    d = tempfile.mkdtemp(prefix="keypose-smoke-")
+    path = os.path.join(d, "av1.mp4")
+    with open(path, "wb") as f: f.write(base64.b64decode("".join(AV1_CLIP)))
+    cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
+    means = []
+    while True:
+        ok, f = cap.read()
+        if not ok: break
+        means.append(round(float(f.mean())))
+    cap.release(); os.remove(path); os.rmdir(d)
+    assert len(means) == 8, f"decoded {len(means)} of 8 AV1 frames (no software AV1 decoder?)"
+    assert all(abs(m - 28 * i) < 8 for i, m in enumerate(means)), means
+    return {"frames": len(means)}
+
+
+@check("mediapipe")
+def _():
+    # the engine stubs matplotlib the same way (helper/mp_engine.py): MediaPipe's vision package
+    # imports it for drawing helpers only, and the runtime leaves it out
+    for n in ("matplotlib", "matplotlib.pyplot"):
+        sys.modules.setdefault(n, types.ModuleType(n))
+    import numpy as np, mediapipe as mp
+    from mediapipe.tasks.python import BaseOptions
+    from mediapipe.tasks.python.vision import HolisticLandmarker, HolisticLandmarkerOptions
+    from mediapipe.tasks.python.vision.core.vision_task_running_mode import VisionTaskRunningMode
+    img = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.zeros((256, 256, 3), np.uint8))
+    info = {"version": mp.__version__, "image": [img.width, img.height]}
+    if len(sys.argv) > 2:
+        opts = HolisticLandmarkerOptions(base_options=BaseOptions(model_asset_path=sys.argv[2]),
+                                         running_mode=VisionTaskRunningMode.IMAGE)
+        with HolisticLandmarker.create_from_options(opts) as lm:
+            r = lm.detect(img)
+        info["landmarker"] = "ran"
+        info["people_in_blank_image"] = len(r.pose_landmarks)
+    return info
+
+
+if __name__ == "__main__":
+    finish(0)
