@@ -39,7 +39,8 @@ These have no source obligation. Where they come from:
 
 | Component | Binary used | Source |
 |---|---|---|
-| CPython 3.12.14 | [python-build-standalone 20260901](https://github.com/astral-sh/python-build-standalone/releases/tag/20260901) `install_only` build, sha256 pinned in `runtime.json` | [python.org](https://www.python.org/downloads/source/) and the [build scripts](https://github.com/astral-sh/python-build-standalone) |
+| CPython 3.12.14 (macOS) | [python-build-standalone 20260901](https://github.com/astral-sh/python-build-standalone/releases/tag/20260901) `install_only` build, sha256 pinned in `runtime.json` | [python.org](https://www.python.org/downloads/source/) and the [build scripts](https://github.com/astral-sh/python-build-standalone) |
+| CPython 3.12.10 (Windows) | python.org's own Windows build, the [`python` NuGet package 3.12.10](https://www.nuget.org/packages/python/3.12.10) (python.exe and DLLs signed by the Python Software Foundation), sha256 pinned in `runtime.json` | [python.org](https://www.python.org/downloads/release/python-31210/) |
 | NumPy, OpenCV (`opencv-python-headless`), ONNX Runtime, MediaPipe, protobuf, flatbuffers, absl-py, packaging | the PyPI wheels named in [`lock/`](lock), sha256 pinned | each project's PyPI page links its repository; the version is the one in `requirements.in` |
 
 ## What the build changes

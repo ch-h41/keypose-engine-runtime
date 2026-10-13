@@ -1,6 +1,6 @@
 {
   "name": "keypose-runtime",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "platforms": {
     "darwin-arm64": { "min_os": "14.0", "wheel_platform": "macosx_14_0_arm64" },
     "win32-x64": { "min_os": "10.0", "wheel_platform": "win_amd64" }
@@ -13,8 +13,10 @@
       "full": { "file": "cpython-3.12.14+20260901-aarch64-apple-darwin-pgo+lto-full.tar.zst", "sha256": "dbefa04d4107b449e17022f9c78d3eacbd37a1aa8c166c6220dbd95addf3f318" }
     },
     "win32-x64": {
-      "install": { "file": "cpython-3.12.14+20260901-x86_64-pc-windows-msvc-install_only.tar.gz", "sha256": "e90c1b6419da3bd812dd73bb3de40287a21abf153438147639ec5e20375ea93f" },
-      "full": { "file": "cpython-3.12.14+20260901-x86_64-pc-windows-msvc-pgo-full.tar.zst", "sha256": "b7cf8be5cd5222d1e456fbf71257efe558d84fe092757b6892c16584e5df01c2" }
+      "version": "3.12.10",
+      "nuget": { "file": "python.3.12.10.nupkg", "url": "https://api.nuget.org/v3-flatcontainer/python/3.12.10/python.3.12.10.nupkg",
+                 "sha256": "0eb85c2dfccccf1b17352de4c397f69194035b7d37149eacc16f1147d93de3b8" },
+      "why": "python.org's own Windows build, whose python.exe and DLLs are signed by the Python Software Foundation (python-build-standalone's are unsigned). 3.12.10 is the last 3.12 python.org built for Windows."
     }
   },
   "ffmpeg": {

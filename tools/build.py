@@ -7,7 +7,8 @@ Drive it with Python 3.14 or later (the licence texts come out of a .tar.zst, wh
 from 3.14). The runtime inside the pack is the pinned CPython 3.12 from runtime.json.
 
 Every step can fail the build; nothing unverified is packed:
-  1. python     fetch the pinned CPython (python-build-standalone), check its sha256, unpack
+  1. python     fetch the pinned CPython, check its sha256, unpack: python-build-standalone on macOS, python.org's
+                own build on Windows (its python.exe and DLLs are signed by the Python Software Foundation)
   2. packages   install exactly lock/<platform>.txt (--no-deps --require-hashes --only-binary)
   3. ffmpeg     macOS: replace OpenCV's GPL FFmpeg with the LGPL build from tools/ffmpeg.sh
   3b. telemetry cut the address MediaPipe uploads usage metrics to, so nothing leaves the machine
@@ -31,6 +32,11 @@ def log(*a):
 
 def fail(msg):
     sys.exit("ERROR: " + msg)
+
+
+def pyver(plat):
+    """The CPython version of one platform's runtime (Windows pins its own: python.org's last 3.12 Windows build)."""
+    return CFG["python"][plat].get("version", CFG["python"]["version"])
 
 
 def host_platform():
@@ -75,10 +81,10 @@ def fetch(url, dest, want):
 
 
 class Layout:
-    """Where things are inside a python-build-standalone install on each OS."""
+    """Where things are inside the runtime on each OS (python-build-standalone on macOS, python.org's NuGet on Windows)."""
     def __init__(self, rt, plat):
         self.rt, self.plat, self.win = rt, plat, plat.startswith("win32")
-        py = CFG["python"]["version"].rsplit(".", 1)[0]
+        py = pyver(plat).rsplit(".", 1)[0]
         self.python = os.path.join(rt, "python.exe") if self.win else os.path.join(rt, "bin", "python3")
         self.stdlib = os.path.join(rt, "Lib") if self.win else os.path.join(rt, "lib", "python" + py)
         self.site = os.path.join(self.stdlib, "site-packages")
@@ -86,14 +92,26 @@ class Layout:
 
 # ---------------------------------------------------------------- 1. python
 def unpack_python(plat, cache, work):
+    rt = os.path.join(work, "keypose-runtime")
+    shutil.rmtree(rt, ignore_errors=True)
+    nuget = CFG["python"][plat].get("nuget")
+    if nuget:                                       # python.org's package: the runtime is everything under tools/
+        archive = fetch(nuget["url"], os.path.join(cache, nuget["file"]), nuget["sha256"])
+        import zipfile
+        with zipfile.ZipFile(archive) as z:
+            for m in z.infolist():
+                if m.filename.startswith("tools/") and not m.is_dir():
+                    dest = os.path.join(rt, *m.filename[len("tools/"):].split("/"))
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with z.open(m) as src, open(dest, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+        return rt
     spec = CFG["python"][plat]["install"]
     archive = fetch(CFG["python"]["base_url"] + spec["file"].replace("+", "%2B"), os.path.join(cache, spec["file"]), spec["sha256"])
     stage = os.path.join(work, "stage")
     shutil.rmtree(stage, ignore_errors=True)
     with tarfile.open(archive, "r:gz") as t:
         t.extractall(stage, filter="data")
-    rt = os.path.join(work, "keypose-runtime")
-    shutil.rmtree(rt, ignore_errors=True)
     os.replace(os.path.join(stage, "python"), rt)
     shutil.rmtree(stage)
     return rt
@@ -327,6 +345,15 @@ def collect_licences(L, plat, cache, ffmpeg_dir, vc_runtime=()):
     out = os.path.join(L.rt, "licenses")
     shutil.rmtree(out, ignore_errors=True)
     rows = []
+    if CFG["python"][plat].get("nuget"):
+        # python.org's build: its LICENSE.txt is CPython's licence followed by every library it bundles (OpenSSL,
+        # libffi, SQLite, bzip2, xz, zlib, expat, mpdecimal) and the terms for the Visual C++ runtime beside it
+        pdir = os.path.join(out, "python")
+        os.makedirs(pdir)
+        os.replace(os.path.join(L.rt, "LICENSE.txt"), os.path.join(pdir, "LICENSE.txt"))
+        rows.append(("Python (CPython)", pyver(plat), "PSF-2.0", "licenses/python/LICENSE.txt",
+                     "python.org's Windows build, signed by the Python Software Foundation; its bundled libraries are in the same file"))
+        return finish_licences(L, plat, rows, out, ffmpeg_dir, vc_runtime)
     # CPython and what python-build-standalone compiled into it: the licence texts ship only in the
     # "full" archive of the same build, so stream just those members out of it (pinned sha256)
     spec = CFG["python"][plat]["full"]
@@ -347,10 +374,14 @@ def collect_licences(L, plat, cache, ffmpeg_dir, vc_runtime=()):
                     for v in variants:
                         for lic in v.get("licenses") or []:
                             ext_lic.setdefault(lic, set()).add(ext)
-    rows.append(("Python (CPython)", CFG["python"]["version"], "PSF-2.0", "licenses/python/LICENSE.cpython.txt",
+    rows.append(("Python (CPython)", pyver(plat), "PSF-2.0", "licenses/python/LICENSE.cpython.txt",
                  "built by python-build-standalone; bundled libraries below"))
     for lic, exts in sorted(ext_lic.items()):
         rows.append(("  in Python: " + ", ".join(sorted(exts)), "", lic, "licenses/python/", ""))
+    return finish_licences(L, plat, rows, out, ffmpeg_dir, vc_runtime)
+
+
+def finish_licences(L, plat, rows, out, ffmpeg_dir, vc_runtime):
     # every installed package: PEP 639 licence folders, top-level licence files, and notices kept
     # inside the package itself (onnxruntime/ThirdPartyNotices.txt, cv2/LICENSE-3RD-PARTY.txt)
     for name, version, dist, meta in installed(L):
@@ -552,6 +583,17 @@ def audit(L):
         shutil.copy2(src, os.path.join(L.rt, dll))
         bundled.append(dll)
     if L.win:
+        # the helper the panel starts must carry a valid signature (aescripts: helper .exe files signed by a trusted
+        # authority); python.org's build is signed by the Python Software Foundation
+        for exe in ("python.exe",):
+            r = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                f"$s = Get-AuthenticodeSignature -LiteralPath '{os.path.join(L.rt, exe)}'; \"$($s.Status)|$($s.SignerCertificate.Subject)\""],
+                               text=True, capture_output=True)
+            status, _, who = r.stdout.strip().partition("|")
+            if status != "Valid":
+                problems.append(f"{exe} is not validly signed ({status or r.stderr.strip()[:200]})")
+            else:
+                notes.append(f"{exe} signed: {who}")
         longest = max((os.path.relpath(os.path.join(a, f), L.rt) for a, _, fs in os.walk(L.rt) for f in fs), key=len)
         # %APPDATA%\Afterimage\engine\.runtime.new\ is ~75 characters; Windows paths stop at 259
         if len(longest) > 175:
@@ -588,7 +630,7 @@ def smoke(L, work, model):
 def manifest(L, plat, rows, ffmpeg, telemetry, audit_info, smoke_info):
     m = {
         "name": CFG["name"], "version": VERSION, "platform": plat, "min_os": CFG["platforms"][plat]["min_os"],
-        "python": CFG["python"]["version"],
+        "python": pyver(plat),
         "packages": {n: v for n, v, _, _ in installed(L)},
         "ffmpeg_replaced": ffmpeg, "telemetry_cut": telemetry, "audit": audit_info,
         "smoke": {k: v.get("info") for k, v in smoke_info["checks"].items()},
