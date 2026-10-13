@@ -588,7 +588,8 @@ def audit(L):
         for exe in ("python.exe",):
             r = subprocess.run(["powershell", "-NoProfile", "-Command",
                                 f"$s = Get-AuthenticodeSignature -LiteralPath '{os.path.join(L.rt, exe)}'; \"$($s.Status)|$($s.SignerCertificate.Subject)\""],
-                               text=True, capture_output=True)
+                               text=True, capture_output=True,   # PowerShell 7's module path breaks Windows PowerShell's
+                               env={k: v for k, v in os.environ.items() if k.upper() != "PSMODULEPATH"})
             status, _, who = r.stdout.strip().partition("|")
             if status != "Valid":
                 problems.append(f"{exe} is not validly signed ({status or r.stderr.strip()[:200]})")
