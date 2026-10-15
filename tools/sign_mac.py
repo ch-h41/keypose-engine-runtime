@@ -2,7 +2,7 @@
 """Signs the macOS pack with a Developer ID and has Apple notarise it, on the Mac that holds the certificate (it never
 goes to CI), then publishes the release CI left as a draft.
 
-    python3 tools/sign_mac.py v1.1.2                     the draft release: sign its macOS pack, update it, publish
+    python3 tools/sign_mac.py v1.0.0                     the draft release: sign its macOS pack, update it, publish
     python3 tools/sign_mac.py --pack PACK --out DIR      a local pack: write the signed one to DIR (nothing uploaded)
 
   --identity SHA1   which certificate (default: the Developer ID Application one that expires last)
