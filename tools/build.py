@@ -231,7 +231,7 @@ def swap_ffmpeg(L, ffmpeg_dir):
         f.write("keypose-runtime changed this package after installing it (tools/build.py swap_ffmpeg):\n\n"
                 "cv2/cv2.abi3.so now loads FFmpeg from an LGPL-2.1-or-later build made by tools/ffmpeg.sh, in place of the\n"
                 "GPL-3.0-or-later Homebrew FFmpeg the wheel bundled. Its load commands were rewritten with install_name_tool\n"
-                "and it was re-signed ad hoc; OpenCV's own code is unchanged.\n\nRelinked:\n"
+                "and it was re-signed (with the Developer ID in a release, tools/sign_mac.py); OpenCV's own code is unchanged.\n\nRelinked:\n"
                 + "".join(f"  {a} -> {b}\n" for a, b in changed)
                 + f"\nRemoved from cv2/.dylibs ({len(removed)} libraries no longer referenced):\n"
                 + "".join(f"  {n}\n" for n in removed))
@@ -273,7 +273,7 @@ def no_telemetry(L):
         f.write("keypose-runtime changed this package after installing it (tools/build.py no_telemetry):\n\n"
                 f"mediapipe/tasks/c/{os.path.basename(lib)} contains a client that uploads usage metrics to Google. The address\n"
                 "it uploads to was overwritten in place with one that never resolves, so nothing is sent"
-                + (", and the library was\nre-signed ad hoc" if is_macho(lib) else "") + ". MediaPipe's own code is otherwise unchanged.\n\n"
+                + (", and the library was\nre-signed (with the Developer ID in a release, tools/sign_mac.py)" if is_macho(lib) else "") + ". MediaPipe's own code is otherwise unchanged.\n\n"
                 + "".join(f"  {a} -> {b} ({n}x)\n" for a, b, n in cut))
     log("telemetry: cut " + ", ".join(f"{a} ({n}x)" for a, _, n in cut) + " in " + os.path.basename(lib))
     return [{"from": a, "to": b, "count": n} for a, b, n in cut]
@@ -643,23 +643,22 @@ def manifest(L, plat, rows, ffmpeg, telemetry, audit_info, smoke_info):
     return m
 
 
-def pack(L, plat, out):
-    os.makedirs(out, exist_ok=True)
-    name = f"keypose-runtime-{VERSION}-{plat}.tar.gz"
-    path = os.path.join(out, name)
-    entries = [L.rt]                                         # sorted, so the archive does not depend on directory order
-    for top, dirs, files in os.walk(L.rt):
+def write_tar(rt, path, win):
+    """The runtime folder rt as the pack at path, under keypose-runtime/: sorted, no owners, no gzip timestamp, so the
+    same folder always gives the same file. tools/sign_mac.py packs the signed macOS runtime with it too. -> bytes of files"""
+    entries = [rt]                                           # sorted, so the archive does not depend on directory order
+    for top, dirs, files in os.walk(rt):
         dirs.sort()
         entries += [os.path.join(top, n) for n in dirs + sorted(files)]
     size = 0
     with open(path + ".part", "wb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=0) as gz, \
             tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as t:
         for entry in entries:
-            rel = os.path.relpath(entry, L.rt).replace(os.sep, "/")
+            rel = os.path.relpath(entry, rt).replace(os.sep, "/")
             ti = t.gettarinfo(entry, arcname="keypose-runtime" if rel == "." else "keypose-runtime/" + rel)
             ti.uid = ti.gid = 0
             ti.uname = ti.gname = ""
-            if L.win:                                        # Windows has no mode bits worth keeping
+            if win:                                          # Windows has no mode bits worth keeping
                 ti.mode = 0o755 if ti.isdir() or entry.lower().endswith((".exe", ".dll", ".pyd")) else 0o644
             if ti.isfile():
                 size += ti.size
@@ -668,6 +667,14 @@ def pack(L, plat, out):
             else:
                 t.addfile(ti)
     os.replace(path + ".part", path)
+    return size
+
+
+def pack(L, plat, out):
+    os.makedirs(out, exist_ok=True)
+    name = f"keypose-runtime-{VERSION}-{plat}.tar.gz"
+    path = os.path.join(out, name)
+    size = write_tar(L.rt, path, L.win)
     digest = sha256(path)
     with open(path + ".sha256", "w", encoding="utf-8", newline="\n") as f:
         f.write(f"{digest}  {name}\n")

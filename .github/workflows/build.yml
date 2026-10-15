@@ -1,4 +1,6 @@
-# Builds, checks and (on a v* tag) publishes the runtime packs. Uses only the built-in GITHUB_TOKEN.
+# Builds, checks and (on a v* tag) drafts a release of the runtime packs. Uses only the built-in GITHUB_TOKEN.
+# The draft is published by tools/sign_mac.py on the Mac with the Developer ID certificate, once it has signed and
+# notarised the macOS pack: the certificate never comes to CI, and no one can download an unsigned macOS pack.
 # Actions are pinned by commit so a moved tag cannot change what builds a release.
 name: build
 
@@ -88,6 +90,6 @@ jobs:
       - name: Assemble (manifest, checksums, LGPL sources, notes)
         env: { GITHUB_TOKEN: "${{ github.token }}" }
         run: python tools/release.py dist
-      - name: Publish
+      - name: Draft (tools/sign_mac.py signs the macOS pack and publishes it)
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "Keypose engine runtime ${GITHUB_REF_NAME#v}" --notes-file RELEASE-NOTES.md
+        run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "Keypose engine runtime ${GITHUB_REF_NAME#v}" --notes-file RELEASE-NOTES.md

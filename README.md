@@ -16,6 +16,13 @@ If github.com is blocked, download the pack for your platform from [Releases](..
 then click **install it from the file** on Keypose's setup screen. It is still checked against
 its sha256.
 
+## Signing
+
+On Windows, `python.exe` and the Python DLLs are python.org's own, signed by the Python Software
+Foundation. The macOS pack is signed with a Developer ID (hardened runtime, secure timestamp) and
+notarised by Apple. CI builds both packs into a draft release, and [`tools/sign_mac.py`](tools/sign_mac.py)
+signs, notarises and tests the macOS pack on the Mac that holds the certificate, then publishes it.
+
 ## Licences
 
 Every pack lists its components and their licences in `THIRD-PARTY-NOTICES.txt`, with the full
