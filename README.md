@@ -29,6 +29,11 @@ Every pack lists its components and their licences in `THIRD-PARTY-NOTICES.txt`,
 texts in `licenses/`. The same notices are attached to each release. Versions are pinned in
 `requirements.in` and `runtime.json`.
 
+The Windows pack includes ONNX Runtime's WebGPU add-on, which runs the engine on any DirectX 12 GPU. It
+bundles Microsoft's DirectX Shader Compiler; `dxil.dll` is under Microsoft's own licence terms for it
+(`licenses/onnxruntime-ep-webgpu/DXC/LICENSE-MS.txt`), the rest is open source. The macOS pack includes
+coremltools, which runs Keypose's High quality body model on the Neural Engine.
+
 FFmpeg is LGPL-2.1-or-later. Its complete source is attached to every release, and you may
 replace the FFmpeg libraries in a pack with your own build. On macOS, the GPL FFmpeg bundled with
 OpenCV's PyPI wheel is removed and an LGPL build is used instead ([`tools/ffmpeg.sh`](tools/ffmpeg.sh)).

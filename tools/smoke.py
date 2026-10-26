@@ -5,7 +5,8 @@ interpreter, isolated from the build machine's environment:
 
 Exercises what the Keypose engine actually uses: numpy, ONNX Runtime on the CPU and on the GPU
 provider when there is one, OpenCV image operations and NMS, FFmpeg video decode with a frame seek and AV1,
-and MediaPipe's native library (a full landmarker run when a model file is given). Exits non-zero
+MediaPipe's native library (a full landmarker run when a model file is given) and, on macOS, Core ML
+through coremltools. Exits non-zero
 on the first failure; the JSON records versions and timings for the build log.
 """
 import base64, json, os, sys, tempfile, time, types
@@ -240,6 +241,35 @@ def _():
         info["landmarker"] = "ran"
         info["people_in_blank_image"] = len(r.pose_landmarks)
     return info
+
+
+@check("coremltools")
+def _():
+    # macOS: High quality's body model runs as compiled Core ML through coremltools. An import that cannot load its
+    # native libraries only prints a warning (in a signed runtime: when they are not signed by the same team), so
+    # a model is compiled and run here, on the CPU and with the Neural Engine allowed.
+    if sys.platform != "darwin":
+        return None
+    import shutil, numpy as np, coremltools as ct
+    from coremltools.models import CompiledMLModel, datatypes
+    from coremltools.models.neural_network import NeuralNetworkBuilder
+    from coremltools.models.utils import compile_model
+    W = np.arange(12, dtype=np.float32).reshape(4, 3) / 10
+    B = np.array([-1, 0, 1, 2], np.float32)
+    b = NeuralNetworkBuilder([("x", datatypes.Array(3))], [("y", datatypes.Array(4))])
+    b.add_inner_product("fc", W=W, b=B, input_channels=3, output_channels=4, has_bias=True, input_name="x", output_name="fc")
+    b.add_activation("relu", "RELU", "fc", "y")
+    d = tempfile.mkdtemp(prefix="keypose-smoke-")
+    try:
+        path = compile_model(b.spec, os.path.join(d, "smoke.mlmodelc"))
+        x = np.array([1, 2, 3], np.float32)
+        want = np.maximum(W @ x + B, 0)
+        for units in (ct.ComputeUnit.CPU_ONLY, ct.ComputeUnit.CPU_AND_NE):
+            y = CompiledMLModel(path, compute_units=units).predict({"x": x})["y"]
+            assert np.allclose(np.ravel(y), want, atol=1e-2), (units, y, want)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    return ct.__version__
 
 
 if __name__ == "__main__":

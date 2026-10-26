@@ -320,7 +320,7 @@ def trim(L):
                 rm(os.path.relpath(dyn, rt), f)
     for top, dirs, _ in os.walk(L.site):                # test suites shipped inside wheels
         for d in list(dirs):
-            if d in ("tests", "test") and os.path.relpath(top, L.site).split(os.sep)[0] in ("numpy", "mediapipe"):
+            if d in ("tests", "test") and os.path.relpath(top, L.site).split(os.sep)[0] in ("numpy", "mediapipe", "coremltools", "sympy", "mpmath"):
                 rm(os.path.relpath(os.path.join(top, d), rt)); dirs.remove(d)
     log(f"trim: removed {sum(gone) / 1e6:.1f} MB")
 
@@ -400,9 +400,9 @@ def finish_licences(L, plat, rows, out, ffmpeg_dir, vc_runtime):
                     shutil.copyfile(src, os.path.join(dest, tail))
                     files.append(tail)
         extra = os.path.join(ROOT, "extra-licenses", name.lower())
-        if not files and os.path.isdir(extra):       # a wheel that ships no licence text: the upstream file, kept here
+        if os.path.isdir(extra):     # upstream texts a wheel leaves out: its own (flatbuffers), or a bundled part's (DXC)
             shutil.copytree(extra, dest, dirs_exist_ok=True)
-            files = os.listdir(extra)
+            files += os.listdir(extra)
         if not files:
             fail(f"{name} {version} ships no licence file - add its upstream licence to extra-licenses/{name.lower()}/")
         changes = os.path.join(dist, "KEYPOSE-CHANGES.txt")
@@ -456,7 +456,12 @@ def write_notices(L, plat, rows, swapped):
               "* Dependencies declared but left out on purpose, because Keypose does not use them:"]
     have = {n.lower() for n, _, _, _ in installed(L)}
     lines += [f"  {k}: {', '.join(v)}." for k, v in CFG.get("omitted_dependencies", {}).items() if k.lower() in have]
-    lines += ["* Removed to save space: pip, Python's tkinter/IDLE, and the test suites inside numpy and mediapipe."]
+    lines += ["* Removed to save space: pip, Python's tkinter/IDLE, and the test suites inside "
+              + ("numpy, mediapipe, coremltools, sympy and mpmath." if "coremltools" in have else "numpy and mediapipe.")]
+    if "onnxruntime-ep-webgpu" in have:
+        lines += ["* onnxruntime-ep-webgpu bundles Microsoft's DirectX Shader Compiler 1.8.2502 (dxcompiler.dll, dxil.dll),",
+                  "  unmodified: licenses/onnxruntime-ep-webgpu/DXC/. dxil.dll is under the Microsoft DirectX Shader",
+                  "  Compiler licence terms (LICENSE-MS.txt), the rest of DXC under LICENSE-LLVM.txt and LICENSE-MIT.txt."]
     if swapped:
         lines += ["* opencv-python-headless: on macOS the wheel bundles a GPL-licensed FFmpeg. This runtime",
                   "  replaces it with an LGPL-2.1-or-later FFmpeg built from the official source (see",
@@ -467,7 +472,7 @@ def write_notices(L, plat, rows, swapped):
     else:
         lines += ["* opencv-python-headless: OpenCV loads FFmpeg (LGPL-2.1-or-later) from",
                   "  cv2/opencv_videoio_ffmpeg*.dll, a separate library you may replace with your own build."]
-    lines += ["* LGPL and MPL components (FFmpeg; certifi's CA bundle): see SOURCES.md in the repository",
+    lines += ["* LGPL and MPL components (FFmpeg; certifi's CA bundle; tqdm on macOS): see SOURCES.md in the repository",
               "  above for their corresponding source.", ""]
     with open(os.path.join(L.rt, "THIRD-PARTY-NOTICES.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines))

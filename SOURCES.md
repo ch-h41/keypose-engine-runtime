@@ -1,8 +1,8 @@
 # Sources
 
 Where the source code of everything in a Keypose runtime pack comes from. Every component is
-open source. The two licences that carry a source obligation are FFmpeg's (LGPL-2.1-or-later)
-and certifi's (MPL-2.0), and both are covered below.
+open source except `dxil.dll` in the Windows pack (below). The licences that carry a source
+obligation are FFmpeg's (LGPL-2.1-or-later), and certifi's and tqdm's (MPL-2.0), all covered below.
 
 ## LGPL: FFmpeg
 
@@ -27,11 +27,24 @@ versions are in OpenCV's `download_src.sh`.
 If a link here ever stops working, open an issue in this repository and the source will be
 provided.
 
-## MPL-2.0: certifi
+## MPL-2.0: certifi, tqdm
 
 certifi is pure Python. Its source is the `certifi/` folder in every pack (`core.py` and the
 `cacert.pem` bundle), unmodified from the [PyPI release](https://pypi.org/project/certifi/)
 ([upstream](https://github.com/certifi/python-certifi)).
+
+tqdm (macOS pack only, MPL-2.0 AND MIT) is pure Python too. Its source is the `tqdm/` folder,
+unmodified from the [PyPI release](https://pypi.org/project/tqdm/4.70.1/)
+([upstream](https://github.com/tqdm/tqdm)).
+
+## Microsoft's licence: dxil.dll (Windows)
+
+ONNX Runtime's WebGPU add-on (`onnxruntime-ep-webgpu`, MIT) bundles two DLLs from Microsoft's
+DirectX Shader Compiler 1.8.2502: `dxcompiler.dll` (open source, LLVM and MIT licences, source at
+[microsoft/DirectXShaderCompiler@b4711839e](https://github.com/microsoft/DirectXShaderCompiler/tree/b4711839e))
+and `dxil.dll`, which Microsoft distributes as a binary under its *Microsoft DirectX Shader Compiler*
+licence terms, allowing it to be redistributed with an application. Both are in the pack
+unmodified, with the three licence texts in `licenses/onnxruntime-ep-webgpu/DXC/`.
 
 ## Permissive components
 
@@ -41,7 +54,7 @@ These have no source obligation. Where they come from:
 |---|---|---|
 | CPython 3.12.14 (macOS) | [python-build-standalone 20260901](https://github.com/astral-sh/python-build-standalone/releases/tag/20260901) `install_only` build, sha256 pinned in `runtime.json` | [python.org](https://www.python.org/downloads/source/) and the [build scripts](https://github.com/astral-sh/python-build-standalone) |
 | CPython 3.12.10 (Windows) | python.org's own Windows build, the [`python` NuGet package 3.12.10](https://www.nuget.org/packages/python/3.12.10) (python.exe and DLLs signed by the Python Software Foundation), sha256 pinned in `runtime.json` | [python.org](https://www.python.org/downloads/release/python-31210/) |
-| NumPy, OpenCV (`opencv-python-headless`), ONNX Runtime, MediaPipe, protobuf, flatbuffers, absl-py, packaging | the PyPI wheels named in [`lock/`](lock), sha256 pinned | each project's PyPI page links its repository; the version is the one in `requirements.in` |
+| NumPy, OpenCV (`opencv-python-headless`), ONNX Runtime, MediaPipe, protobuf, flatbuffers, absl-py, packaging; on Windows the WebGPU add-on (`onnxruntime-ep-webgpu`, whose WebGPU is [Dawn](https://dawn.googlesource.com/dawn)); on macOS coremltools, sympy, mpmath, attrs, cattrs, typing-extensions, PyYAML | the PyPI wheels named in [`lock/`](lock), sha256 pinned | each project's PyPI page links its repository; the version is the one in `requirements.in` |
 
 ## What the build changes
 
@@ -54,6 +67,9 @@ Nothing is modified except the following, and each change is written into the pa
   `https://play.googleapis.com/log` is overwritten with `https://telemetry-off.invalid/x`, which has
   the same length and never resolves, so no usage statistics are sent. On macOS the library is then
   re-signed. Details are in `licenses/mediapipe/KEYPOSE-CHANGES.txt`.
-- **Removed:** pip, tkinter/IDLE/turtledemo/ensurepip, C headers, and the `test`/`tests` folders inside NumPy and MediaPipe.
+- **Removed:** pip, tkinter/IDLE/turtledemo/ensurepip, C headers, and the `test`/`tests` folders inside NumPy and
+  MediaPipe, and on macOS inside coremltools, sympy and mpmath.
+- **macOS, signing:** every native library is signed with the Developer ID (`tools/sign_mac.py`), coremltools' too:
+  the signed `python3` loads only libraries signed by the same team.
 - **Added:** `.pyc` files compiled from the shipped sources; on Windows, the Microsoft Visual C++
   runtime DLLs next to `python.exe` when a component needs them.
